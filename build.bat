@@ -89,7 +89,7 @@ echo.
 :: [7/7] 复制 Chromium 到输出目录
 echo [7/7] 复制 Chromium 浏览器到输出目录...
 set "CHROMIUM_SRC=%LOCALAPPDATA%\ms-playwright"
-set "OUTPUT_DIR=dist\抖音自动续火花"
+set "OUTPUT_DIR=dist\抖音自动续火花-桌面"
 
 if exist "%CHROMIUM_SRC%" (
     echo    正在复制 Chromium 文件...
@@ -119,7 +119,7 @@ if not exist "%OUTPUT_DIR%\config.json" (
 > "%OUTPUT_DIR%\使用说明.txt" echo 抖音自动续火花 - 使用说明
 >> "%OUTPUT_DIR%\使用说明.txt" echo ================================
 >> "%OUTPUT_DIR%\使用说明.txt" echo.
->> "%OUTPUT_DIR%\使用说明.txt" echo 1. 双击 "抖音自动续火花.exe" 启动图形界面
+>> "%OUTPUT_DIR%\使用说明.txt" echo 1. 双击 "抖音自动续火花-桌面.exe" 启动图形界面
 >> "%OUTPUT_DIR%\使用说明.txt" echo.
 >> "%OUTPUT_DIR%\使用说明.txt" echo 2. 首次使用请先点击 "📱 扫码登录"
 >> "%OUTPUT_DIR%\使用说明.txt" echo    在弹出的浏览器中扫码登录抖音
@@ -142,6 +142,6 @@ echo ==========================================
 echo   ✅ 构建完成！
 echo ==========================================
 echo.
-echo   输出目录: dist\抖音自动续火花\
+echo   输出目录: dist\抖音自动续火花-桌面\
 echo.
 pause
