@@ -1,0 +1,17 @@
+.env
+.env.account*
+!.env.account.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+artifacts/*
+!artifacts/.gitkeep
+config/tasks.json
+config/tasks/
+config/accounts.json
+config.json
+storage-state.json
+storage_state/
+build/
+dist/
