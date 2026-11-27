@@ -36,10 +36,15 @@ RESULT_PATH = APP_DIR / "artifacts" / "result.json"
 HISTORY_PATH = APP_DIR / "artifacts" / "history.json"
 LOG_PATH = APP_DIR / "artifacts" / "run.log"
 
-# 打包后绿色软件模式：优先使用 exe 同目录下的浏览器
+# 浏览器目录：优先产物目录自带的 ms-playwright；否则回退本机默认缓存，
+# 避免打包后 Playwright 把驱动包内的 .local-browsers 当成浏览器目录而找不到 Chromium。
 _bundled = APP_DIR / "ms-playwright"
 if _bundled.is_dir():
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled)
+else:
+    _local_cache = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "ms-playwright"
+    if _local_cache.is_dir():
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_local_cache)
 
 STATUS_COLORS = {
     "success": "#2e9e5b",
@@ -463,7 +468,55 @@ class DouyinPanel:
             subprocess.Popen(["xdg-open", str(log_dir)])
 
 
+def _selfcheck() -> int:
+    """打包后自检：在产物进程内验证模块导入、Playwright 驱动与浏览器可启动。
+
+    结果写入 artifacts/selfcheck.log，供无控制台环境排查。
+    """
+    import asyncio
+    import traceback
+
+    log = APP_DIR / "artifacts" / "selfcheck.log"
+    log.parent.mkdir(exist_ok=True)
+    lines: list[str] = []
+
+    def w(msg: str) -> None:
+        lines.append(msg)
+
+    try:
+        w("[1/4] 导入业务模块...")
+        from app.login import login  # noqa: F401
+        from app.chat_list import list_conversations  # noqa: F401
+        from app.main import run  # noqa: F401
+        import panel_store  # noqa: F401
+        w("  导入 OK: app.login / app.chat_list / app.main / panel_store")
+
+        async def probe() -> None:
+            w("[2/4] 启动 Playwright driver...")
+            from playwright.async_api import async_playwright
+            pw = await async_playwright().start()
+            w("  driver OK")
+            w("[3/4] 启动 Chromium...")
+            browser = await pw.chromium.launch(headless=True)
+            w("  浏览器 OK")
+            w("[4/4] 关闭...")
+            await browser.close()
+            await pw.stop()
+
+        asyncio.run(probe())
+        w("SELFCHECK_OK")
+        code = 0
+    except Exception:
+        w("SELFCHECK_FAIL\n" + traceback.format_exc())
+        code = 1
+
+    log.write_text("\n".join(lines), encoding="utf-8")
+    return code
+
+
 def main() -> None:
+    if "--selfcheck" in sys.argv:
+        raise SystemExit(_selfcheck())
     root = tk.Tk()
     DouyinPanel(root)
     root.mainloop()
