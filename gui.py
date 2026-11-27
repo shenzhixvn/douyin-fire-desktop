@@ -322,16 +322,22 @@ class DouyinPanel:
             threading.Event().wait(0.02)
 
     def _submit(self, coro, label: str) -> None:
-        if self._task is not None and not self._task.done():
-            messagebox.showwarning("提示", "已有任务正在运行，请先停止")
-            coro.close()
-            return
-        self._ensure_loop()
-        self._set_log(f"── 开始: {label} ──")
-        self.progress.start(10)
-        self._running_label = label
-        self._task = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        self._task.add_done_callback(lambda f: self.root.after(0, self._on_task_done, f))
+        try:
+            if self._task is not None and not self._task.done():
+                messagebox.showwarning("提示", "已有任务正在运行，请先停止")
+                coro.close()
+                return
+            self._ensure_loop()
+            self._set_log(f"── 开始: {label} ──")
+            self.progress.start(10)
+            self._running_label = label
+            self._task = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            self._task.add_done_callback(lambda f: self.root.after(0, self._on_task_done, f))
+        except Exception as exc:
+            self.progress.stop()
+            self._running_label = None
+            self._append_log(f"❌ 启动 {label} 失败: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"启动{label}失败", f"{type(exc).__name__}: {exc}")
 
     def _on_task_done(self, fut: asyncio.Future) -> None:
         self.progress.stop()
@@ -359,8 +365,8 @@ class DouyinPanel:
             messagebox.showinfo("提示", "当前没有运行中的任务")
 
     def do_login(self) -> None:
-        from scripts import login_auto
-        self._submit(login_auto.login(), "扫码登录")
+        from app.login import login
+        self._submit(login(), "扫码登录")
 
     def do_dry_run(self) -> None:
         from app.main import run as backend_run
