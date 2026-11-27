@@ -11,6 +11,9 @@ playwright_data = collect_data_files("playwright")
 # 收集 Playwright 的子模块
 playwright_hidden = collect_submodules("playwright")
 
+# 收集后端 app 包全部子模块（面板在方法内延迟导入，静态分析可能漏收）
+app_hidden = collect_submodules("app")
+
 a = Analysis(
     ["gui.py"],
     pathex=[],
@@ -27,7 +30,8 @@ a = Analysis(
         "playwright.async_api",
         "playwright.sync_api",
         "dotenv",
-    ] + playwright_hidden,
+        "scripts.login_auto",
+    ] + playwright_hidden + app_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

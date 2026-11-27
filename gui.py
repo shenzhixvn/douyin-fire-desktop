@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -59,8 +60,10 @@ class DouyinPanel:
         self.root.minsize(880, 560)
 
         self.data = ps.PanelData()
-        self._process: subprocess.Popen | None = None
-        self._log_thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._worker: threading.Thread | None = None
+        self._task: asyncio.Future | None = None
+        self._running_label: str | None = None
 
         self._build_ui()
         self.refresh()
@@ -105,6 +108,7 @@ class DouyinPanel:
         btn_row = ttk.Frame(manage, padding=(0, 6, 0, 0))
         btn_row.pack(fill=tk.X)
         ttk.Button(btn_row, text="➕ 添加好友", command=self.add_entry).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_row, text="📋 拉取名单", command=self.fetch_friends).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row, text="✏️ 修改表情", command=self.edit_entry).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row, text="🗑 删除选中", command=self.remove_entries).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row, text="💾 保存配置", command=self.save_entries).pack(side=tk.LEFT, padx=3)
@@ -291,7 +295,7 @@ class DouyinPanel:
         self.root.wait_window(dialog)
         return result["name"], result["sticker"], result["ok"]
 
-    # ── 子进程运行 ───────────────────────────────────────────────────
+    # ── 进程内异步任务（不再派生 exe 子进程，避免打包后弹控制台） ──────
     def _set_log(self, text: str) -> None:
         self.log_text.delete(0, tk.END)
         for line in text.splitlines():
@@ -303,62 +307,146 @@ class DouyinPanel:
         self.log_text.see(tk.END)
         self.root.update_idletasks()
 
-    def _run_script(self, script_args: list[str], label: str) -> None:
-        if self._process and self._process.poll() is None:
-            messagebox.showwarning("提示", "已有任务正在运行，请先停止")
+    def _ensure_loop(self) -> None:
+        if self._loop is not None:
             return
+
+        def runner() -> None:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_forever()
+
+        self._worker = threading.Thread(target=runner, daemon=True)
+        self._worker.start()
+        while self._loop is None:
+            threading.Event().wait(0.02)
+
+    def _submit(self, coro, label: str) -> None:
+        if self._task is not None and not self._task.done():
+            messagebox.showwarning("提示", "已有任务正在运行，请先停止")
+            coro.close()
+            return
+        self._ensure_loop()
         self._set_log(f"── 开始: {label} ──")
         self.progress.start(10)
+        self._running_label = label
+        self._task = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        self._task.add_done_callback(lambda f: self.root.after(0, self._on_task_done, f))
 
-        cmd = [sys.executable] + script_args
-        self._append_log("执行: " + " ".join(cmd))
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        try:
-            self._process = subprocess.Popen(
-                cmd, cwd=str(APP_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
-            )
-        except Exception as exc:
-            self._append_log(f"启动失败: {exc}")
-            self.progress.stop()
-            return
-
-        def reader():
-            assert self._process and self._process.stdout
-            for line in self._process.stdout:
-                self.root.after(0, self._append_log, line.rstrip())
-            self._process.wait()
-            code = self._process.returncode
-            self.root.after(0, self._on_done, label, code)
-
-        self._log_thread = threading.Thread(target=reader, daemon=True)
-        self._log_thread.start()
-
-    def _on_done(self, label: str, return_code: int) -> None:
+    def _on_task_done(self, fut: asyncio.Future) -> None:
         self.progress.stop()
-        status = "✅ 成功" if return_code == 0 else f"❌ 退出码 {return_code}"
+        label = self._running_label or "任务"
+        if fut.cancelled():
+            status = "已停止"
+        else:
+            exc = fut.exception()
+            if exc is None:
+                status = "✅ 成功"
+            else:
+                status = f"❌ {type(exc).__name__}: {exc}"
+                self._append_log(status)
         self._append_log(f"── 结束: {label} {status} ──")
-        self._process = None
+        self._task = None
+        self._running_label = None
         self.refresh()
 
     def stop_process(self) -> None:
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-            self._append_log("── 已手动停止 ──")
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            self._append_log("── 已请求停止，等待任务退出 ──")
             self.progress.stop()
         else:
             messagebox.showinfo("提示", "当前没有运行中的任务")
 
     def do_login(self) -> None:
-        self._run_script(["scripts/login_auto.py"], "扫码登录")
+        from scripts import login_auto
+        self._submit(login_auto.login(), "扫码登录")
 
     def do_dry_run(self) -> None:
-        self._run_script(["run.py", "--dry-run"], "Dry Run 测试")
+        from app.main import run as backend_run
+        self._submit(backend_run(dry_run=True), "Dry Run 测试")
 
     def do_run(self) -> None:
         if not messagebox.askyesno("确认", "确认要正式发送表情吗？\n建议先运行 Dry Run 测试。"):
             return
-        self._run_script(["run.py"], "正式运行")
+        from app.main import run as backend_run
+        self._submit(backend_run(dry_run=False), "正式运行")
+
+    # ── 拉取会话名单并勾选加入 ────────────────────────────────────────
+    def fetch_friends(self) -> None:
+        from app.chat_list import list_conversations
+
+        self._ensure_loop()
+        self._set_log("── 开始: 拉取会话名单 ──")
+        self.progress.start(10)
+        self._running_label = "拉取名单"
+
+        async def wrap() -> list[str]:
+            return await list_conversations()
+
+        self._task = asyncio.run_coroutine_threadsafe(wrap(), self._loop)
+        self._task.add_done_callback(lambda f: self.root.after(0, self._on_fetched, f))
+
+    def _on_fetched(self, fut: asyncio.Future) -> None:
+        self.progress.stop()
+        self._task = None
+        self._running_label = None
+        if fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is not None:
+            messagebox.showerror("拉取失败", f"{type(exc).__name__}: {exc}")
+            self.refresh()
+            return
+        names = fut.result() or []
+        if not names:
+            messagebox.showinfo("提示", "未读取到会话列表，可稍后重试")
+            self.refresh()
+            return
+        self._pick_friends(names)
+
+    def _pick_friends(self, names: list[str]) -> None:
+        existing = {e.name for e in self.data.entries}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择要加入的好友 / 群聊")
+        dialog.transient(self.root)
+        dialog.geometry("420x520")
+
+        ttk.Label(dialog, text="勾选后点击「加入选中」（已在名单中的不会重复添加）").pack(pady=8)
+
+        body = ttk.Frame(dialog)
+        body.pack(fill=tk.BOTH, expand=True, padx=10)
+        canvas = tk.Canvas(body)
+        vsb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        checks: list[tuple[tk.BooleanVar, str]] = []
+        for name in names:
+            var = tk.BooleanVar(value=False)
+            already = name in existing
+            text = name + ("（已在名单）" if already else "")
+            ttk.Checkbutton(inner, text=text, variable=var, state=tk.DISABLED if already else tk.NORMAL).pack(
+                anchor=tk.W, padx=6, pady=2
+            )
+            checks.append((var, name))
+
+        def confirm() -> None:
+            added = 0
+            for var, name in checks:
+                if var.get() and name not in existing:
+                    self.data.entries.append(ps.Entry(name=name, sticker="续火花", msg_type="sticker"))
+                    added += 1
+            dialog.destroy()
+            messagebox.showinfo("完成", f"已加入 {added} 个对象，请在列表中按需修改表情并保存。")
+            self.refresh()
+
+        ttk.Button(dialog, text="加入选中", command=confirm).pack(pady=8)
+        dialog.grab_set()
 
     def open_logs(self) -> None:
         log_dir = APP_DIR / "artifacts"
